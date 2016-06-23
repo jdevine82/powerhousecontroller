@@ -1,3 +1,5 @@
+
+
 /*This program is the heart of the powerhouse. It measure the current shunts, battery voltages. It turns on the generator when needed and can also control the wind generator if need. It does
  * most of its work through the IIC network using INA226 ICs which are IIC connected to 75mv shunts and the 24v bus. It will also control the grid feed inverter when it needs to do so. It can 
  * also interface with a sd card via SPI to log results. The sd card logger contains the RTC as well. Also connected to the IIC is the lcd display driven with 3 buttons for user interaction. The line
@@ -9,6 +11,9 @@
 
 #include <Wire.h>
 #include <INA226.h>
+#include <SoftwareSerial.h>
+#include <espduino.h>
+#include <mqtt.h>
 
 //pins definitions here
 
@@ -19,7 +24,7 @@
 # define SPIpins 13
 # define SdCardSelect 10  //slave select for talking to sd card.
 # define CanBusSelect 8     //select can bus module to talk to with spi.
-# define Esp8266Interrupt 2 // this is a physcial interrupt pin.
+# define Esp8266Power 2 // this is a physcial power enable pin.
 # define 240Measure A0 //used for measureing line voltage.
 # define SoftwareSerialRX 6       // used to listen for data maybe...
 # define SoftwardSerialTX 7        // used to send data out 
@@ -42,12 +47,18 @@
 
 
 //variables
+SoftwareSerial debugPort(SoftwareSerialRx, SoftwareSerialTx); // RX, TX
+ESP esp(&Serial, &debugPort, ESP8266Power);   //need to remove the debugport later.  
+MQTT mqtt(&esp);
+
+
 INA226 InaInverter;
 INA226 InaSolar;
 INA226 InaWind;
 INA226 InaGenerator;
 float SystemVoltage,InverterPower,InverterCurrent,SolarPower,SolarCurrent,WindPower,WindCurrent,GeneratorPower,GeneratorCurrent;  
 int LineVoltage;
+boolean WifiConnected = false;
 
 void setup() {
   // put your setup code here, to run once:
@@ -81,8 +92,38 @@ void setup() {
   InaWind.calibrate(0.0015,50); //50a shunt
   InaGenerator.calibrate(0.00075,100); //100shunt
   
+  Serial.begin(19200);
+  debugPort.begin(19200);
+  esp.enable();
+  delay(500);
+  esp.reset();
+  delay(500);
+  while(!esp.ready());
+
+  debugPort.println("ARDUINO: setup mqtt client");
+  if(!mqtt.begin("jasonsmqtt", "admin", "password1914", 120, 1)) {  //need to edit this when server setup
+    debugPort.println("ARDUINO: fail to setup mqtt");
+    while(1);
+  }
 
 
+  debugPort.println("ARDUINO: setup mqtt lwt");
+  mqtt.lwt("/lwt", "offline", 0, 0); //or mqtt.lwt("/lwt", "offline");
+
+/*setup mqtt events */
+  mqtt.connectedCb.attach(&mqttConnected);
+  mqtt.disconnectedCb.attach(&mqttDisconnected);
+  mqtt.publishedCb.attach(&mqttPublished);
+  mqtt.dataCb.attach(&mqttData);
+
+  /*setup wifi*/
+  debugPort.println("ARDUINO: setup wifi");
+  esp.wifiCb.attach(&wifiCb);
+
+  esp.wifiConnect("jasonswifi","password1914");
+
+
+  debugPort.println("ARDUINO: system started");
 
 
 }
@@ -105,9 +146,11 @@ LineVoltage=analogRead(240Measure)*240multiplyer;  //this ends up being a intege
 
 
 
+  //This section we will Read mqtt Serial etc commands
+  esp.process();
+  if(wifiConnected) {
 
-  //This section we will Read MQTT Serial etc commands
-
+  }
 
 
 
@@ -118,11 +161,62 @@ LineVoltage=analogRead(240Measure)*240multiplyer;  //this ends up being a intege
 
 
  
-  //This section we will setoutpus and send MQTT,
+  //This section we will setoutpus and send mqtt,
 
 
 
 
   //This section we will update display and do menu routine.
+
+}
+
+void wifiCb(void* response)
+{
+  uint32_t status;
+  RESPONSE res(response);
+
+  if(res.getArgc() == 1) {
+    res.popArgs((uint8_t*)&status, 4);
+    if(status == STATION_GOT_IP) {
+      debugPort.println("WIFI CONNECTED");
+      mqtt.connect("10.0.0.106", 1883, false);
+      WifiConnected = true;
+      //or mqtt.connect("host", 1883); /*without security ssl*/
+    } else {
+      WifiConnected = false;
+      mqtt.disconnect();
+    }
+
+  }
+}
+
+void mqttConnected(void* response)
+{
+  debugPort.println("Connected");
+  mqtt.subscribe("/topic/0"); //or mqtt.subscribe("topic"); /*with qos = 0*/
+  mqtt.subscribe("/topic/1");
+  mqtt.subscribe("/topic/2");
+  mqtt.publish("/topic/0", "data0");
+
+}
+void mqttDisconnected(void* response)
+{
+
+}
+void mqttData(void* response)
+{
+  RESPONSE res(response);
+
+  debugPort.print("Received: topic=");
+  String topic = res.popString();
+  debugPort.println(topic);
+
+  debugPort.print("data=");
+  String data = res.popString();
+  debugPort.println(data);
+
+}
+void mqttPublished(void* response)
+{
 
 }
